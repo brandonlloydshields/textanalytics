@@ -1,0 +1,226 @@
+---
+title: "Landlord Topic Modeling"
+author: "Brandon Shields"
+date: "May 31, 2023"
+output: html_document
+---
+
+```{r}
+
+#This link is to the resource used to conduct the analysis below. 
+#https://ladal.edu.au/topicmodels.html
+
+#NLP Resource
+#https://medium.com/broadhorizon-cmotions/natural-language-processing-for-predictive-purposes-with-r-cb65f009c12b
+
+#Additional Resource
+#https://www.kaggle.com/code/rtatman/nlp-in-r-topic-modelling
+```
+
+
+```{r}
+# install packages
+install.packages("tm")
+install.packages("topicmodels")
+install.packages("reshape2")
+install.packages("ggplot2")
+install.packages("wordcloud")
+install.packages("pals")
+install.packages("SnowballC")
+install.packages("lda")
+install.packages("ldatuning")
+install.packages("kableExtra")
+install.packages("DT")
+install.packages("flextable")
+# install klippy for copy-to-clipboard button in code chunks
+install.packages("remotes")
+remotes::install_github("rlesur/klippy")
+
+# set options
+options(stringsAsFactors = F)         # no automatic data transformation
+options("scipen" = 100, "digits" = 4) # suppress math annotation
+# load packages
+library(knitr) 
+library(kableExtra) 
+library(DT)
+library(tm)
+library(topicmodels)
+library(reshape2)
+library(ggplot2)
+library(wordcloud)
+library(SnowballC)
+library(lda)
+library(ldatuning)
+library(flextable)
+library(caret)
+# activate klippy for copy-to-clipboard button
+klippy::klippy()
+
+```
+
+```{r}
+#Import and preprocess the text data: Load your customer comments into R, either from a text file or a data frame.
+
+landlord.df <- read.csv("~/Landlord Comment level.csv")
+
+comments <- landlord.df$Comment
+
+#Load Stop words
+english_stopwords <- readLines("https://slcladal.github.io/resources/stopwords_en.txt", encoding = "UTF-8")
+
+#create a corpus object
+
+corpus <- Corpus(VectorSource(comments))
+
+
+# Preprocessing chain
+processedCorpus <- tm_map(corpus, content_transformer(tolower))
+processedCorpus <- tm_map(processedCorpus, removeWords, english_stopwords)
+processedCorpus <- tm_map(processedCorpus, removePunctuation, preserve_intra_word_dashes = TRUE)
+processedCorpus <- tm_map(processedCorpus, removeNumbers)
+processedCorpus <- tm_map(processedCorpus, stemDocument, language = "en")
+processedCorpus <- tm_map(processedCorpus, stripWhitespace)
+```
+
+```{r}
+# compute document term matrix with terms >= minimumFrequency
+minimumFrequency <-2
+DTM <- DocumentTermMatrix(processedCorpus, control = list(bounds = list(global = c(minimumFrequency, Inf))))
+# have a look at the number of documents and terms in the matrix
+dim(DTM)
+
+DTMtfidf <- DocumentTermMatrix(processedCorpus, control = list(weighting = 
+                                                                  function(x)
+                                                                    weightTfIdf(x, normalize = T)))
+
+
+#DTM (Document term matrix) is obtained by taking the transpose of TDM. In DTM, the rows correspond to the documents in the corpus and the columns correspond to the terms in the documents and the cells correspond to the weights of the terms.
+
+#There are various approaches for determining the terms' weights. The simple and frequently used approaches include:-
+
+#1. Binary weights
+
+#2. Term Frequency (TF)
+
+#3. Inverse Document Frequency (IDF)
+
+#4. Term Frequency-Inverse Document Frequency (TF-IDF)
+```
+
+```{r}
+# due to vocabulary pruning, we have empty rows in our DTM
+# LDA does not like this. So we remove those docs from the
+# DTM and the metadata
+sel_idx <- slam::row_sums(DTM) > 0
+DTM <- DTM[sel_idx, ]
+comments <- comments[sel_idx]
+```
+
+```{r}
+# create models with different number of topics
+result <- ldatuning::FindTopicsNumber(
+  DTM,
+  topics = seq(from = 2, to = 20, by = 1),
+  metrics = c("CaoJuan2009",  "Deveaud2014", "Griffiths2004", "Arun2010"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  verbose = TRUE
+)
+```
+
+```{r}
+FindTopicsNumber_plot(result)
+```
+
+```{r}
+# number of topics
+K <- 5
+# set random number generator seed
+set.seed(9161)
+# compute the LDA model, inference via 1000 iterations of Gibbs sampling
+topicModel <- LDA(DTM, K, method="Gibbs", control=list(iter = 500, verbose = 25))
+```
+
+```{r}
+# have a look a some of the results (posterior distributions)
+tmResult <- posterior(topicModel)
+# format of the resulting object
+attributes(tmResult)
+
+nTerms(DTM)              # lengthOfVocab
+
+# topics are probability distributions over the entire vocabulary
+beta <- tmResult$terms   # get beta from results
+dim(beta)                # K distributions over nTerms(DTM) terms
+
+rowSums(beta)            # rows in beta sum to 1
+
+nDocs(DTM)               # size of collection
+
+# for every document we have a probability distribution of its contained topics
+theta <- tmResult$topics 
+dim(theta)               # nDocs(DTM) distributions over K topics
+```
+
+```{r}
+terms(topicModel, 15)
+exampleTermData <- terms(topicModel, 15)
+
+#We cab see here that there are three topics that surface regarding landlord/tenant
+
+#1) Start Service/Account
+#2) Tranfer / Move Service
+#3) Bill / Payment
+
+```
+
+```{r}
+#Create Names
+
+top5termsPerTopic <- terms(topicModel, 5)
+topicNames <- apply(top5termsPerTopic, 2, paste, collapse=" ")
+```
+
+
+```{r}
+# What are the most probable topics in the entire collection?
+topicProportions <- colSums(theta) / nDocs(DTM)  # mean probabilities over all paragraphs
+names(topicProportions) <- topicNames     # assign the topic names we created before
+sort(topicProportions, decreasing = TRUE) # show summed proportions in decreased order
+```
+
+```{r}
+soP <- sort(topicProportions, decreasing = TRUE)
+paste(round(soP, 5), ":", names(soP))
+```
+
+```{r}
+countsOfPrimaryTopics <- rep(0, K)
+names(countsOfPrimaryTopics) <- topicNames
+for (i in 1:nDocs(DTM)) {
+  topicsPerDoc <- theta[i, ] # select topic distribution for document i
+  # get first element position from ordered list
+  primaryTopic <- order(topicsPerDoc, decreasing = TRUE)[1] 
+  countsOfPrimaryTopics[primaryTopic] <- countsOfPrimaryTopics[primaryTopic] + 1
+}
+sort(countsOfPrimaryTopics, decreasing = TRUE)
+```
+
+```{r}
+so <- sort(countsOfPrimaryTopics, decreasing = TRUE)
+paste(so, ":", names(so))
+```
+
+```{r}
+
+```
+
+```{r}
+#review results
+
+
+review_topics <- topics(topicModel)
+
+final_results <- data.frame(review_topics, comments)
+```
+
